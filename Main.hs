@@ -14,20 +14,6 @@ failWithMessage message = do
   hPutStrLn stderr message
   exitFailure
 
-removeEnd :: Eq a => [a] -> [a] -> Maybe [a]
-removeEnd ending list =
-  if ending == list then
-    Just []
-  else
-    if list == [] then
-      Nothing
-    else
-      let
-        first : remaining = list
-        removeEndRemaining = removeEnd ending remaining
-      in
-        fmap (first :) removeEndRemaining
-
 vmExtension :: String
 vmExtension = ".vm"
 jackExtension :: String

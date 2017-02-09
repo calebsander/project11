@@ -1,6 +1,6 @@
 module JackParser where
 
-import Control.Monad (liftM, ap)
+import Control.Monad (ap, liftM, void)
 import Data.Char (isDigit, isAlpha, isSpace)
 
 data Class
@@ -206,7 +206,7 @@ parseLineComment :: Parser ()
 parseLineComment = do
   keyword "//"
   parseUntil $ choice
-    [ fmap (const ()) (satisfies isNewLine)
+    [ void (satisfies isNewLine)
     , parseEnd
     ]
 
@@ -224,18 +224,18 @@ whiteSpaceParser =
       else Just ((), dropped)
 
 requiredSpaceParser :: Parser ()
-requiredSpaceParser = do
-  _ <- oneOrMore $ choice
-    [ whiteSpaceParser
-    , parseLineComment
-    , parseBlockComment
-    ]
-  return ()
+requiredSpaceParser =
+  void $
+    oneOrMore $ choice
+      [ whiteSpaceParser
+      , parseLineComment
+      , parseBlockComment
+      ]
 
 optionalSpaceParser :: Parser ()
-optionalSpaceParser = do
-  _ <- parseOptional requiredSpaceParser
-  return ()
+optionalSpaceParser =
+  void $
+    parseOptional requiredSpaceParser
 
 parseCommaSeparated :: Parser a -> Parser [a]
 parseCommaSeparated parser = do

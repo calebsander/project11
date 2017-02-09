@@ -17,6 +17,7 @@ singleVars =
       \(VarDec jackType vars) ->
         map (\var -> (var, jackType)) vars
     )
+
 makeScope :: [VarDec] -> Scope
 makeScope varDecs =
   let
@@ -197,17 +198,12 @@ instance Functor ContextCompiler where
 modifyContext :: (Context -> Context) -> ContextCompiler ()
 modifyContext modify =
   ContextCompiler $ \context -> ([], modify context, ())
-constantCompiler :: [VMInstruction] -> ContextCompiler ()
-constantCompiler instructions =
-  ContextCompiler $ \context ->
-    (instructions, context, ())
-compileInOrder :: [ContextCompiler ()] -> ContextCompiler ()
-compileInOrder [] = constantCompiler []
-compileInOrder (compiler : compilers) = do
-  compiler
-  compileInOrder compilers
+instance Compilable VMInstruction where
+  compile instruction =
+    ContextCompiler $ \context ->
+      ([instruction], context, ())
 compileEach :: (Compilable a) => [a] -> ContextCompiler ()
-compileEach = compileInOrder . map compile
+compileEach = sequence_ . map compile
 
 class Compilable a where
   compile :: a -> ContextCompiler ()
@@ -263,12 +259,10 @@ instance Compilable Class where
 instance Compilable Subroutine where
   compile (Subroutine funcType _ funcName parameters locals body) = do
     className <- getClass
-    constantCompiler
-      [
-        FunctionInstruction
+    compile $
+      FunctionInstruction
         (vmFunctionName className funcName)
         (length (singleVars locals))
-      ]
     context <- getContext --save context so it can be restored after this subroutine
     modifyContext $ \(Context staticContext instanceContext) ->
       let
@@ -294,81 +288,73 @@ instance Compilable Subroutine where
           )
           newInstanceContext
     case funcType of
-      Method -> --set this to arg 0
-        constantCompiler
-          [ PushInstruction (Target ArgumentSegment 0)
-          , PopInstruction this
-          ]
+      Method -> do --set this to arg 0
+        compile $
+          PushInstruction (Target ArgumentSegment 0)
+        compile (PopInstruction this)
       Constructor -> do --allocate memory for this
         fieldCount <- getFieldCount
         compile (IntConst fieldCount)
-        constantCompiler
-          [ CallInstruction
+        compile $
+          CallInstruction
             (vmFunctionName "Memory" "alloc")
             1
-          , PopInstruction this
-          ]
+        compile (PopInstruction this)
       Function ->
         return ()
     compile body
-    constantCompiler [EmptyInstruction] --for readability
+    compile EmptyInstruction --for readability
     modifyContext (const context) --restore context for next subroutine
 
 instance Compilable Statement where
   compile (Let access expression) = do
     compile expression
     target <- compileAccess access
-    constantCompiler [PopInstruction target]
+    compile (PopInstruction target)
   compile (If condition ifBlock []) = do --more efficient version if there are no else conditions
     endLabel <- fmap ("IF_END_" ++) getLabelId
     compile (Unary LogicalNot (Parenthesized condition))
-    constantCompiler [IfGotoInstruction endLabel]
+    compile (IfGotoInstruction endLabel)
     compile ifBlock
-    constantCompiler [LabelInstruction endLabel]
+    compile (LabelInstruction endLabel)
   compile (If condition ifBlock elseBlock) = do
     elseLabel <- fmap ("ELSE_" ++) getLabelId
     endLabel <- fmap ("IF_END_" ++) getLabelId
     compile (Unary LogicalNot (Parenthesized condition))
-    constantCompiler [IfGotoInstruction elseLabel]
+    compile (IfGotoInstruction elseLabel)
     compile ifBlock
-    constantCompiler
-      [ GotoInstruction endLabel
-      , LabelInstruction elseLabel
-      ]
+    compile (GotoInstruction endLabel)
+    compile (LabelInstruction elseLabel)
     compile elseBlock
-    constantCompiler [LabelInstruction endLabel]
+    compile (LabelInstruction endLabel)
   compile (While condition statements) = do
     startLabel <- fmap ("WHILE_START_" ++) getLabelId
     endLabel <- fmap ("WHILE_END_" ++) getLabelId
-    constantCompiler [LabelInstruction startLabel]
+    compile (LabelInstruction startLabel)
     compile (Unary LogicalNot (Parenthesized condition))
-    constantCompiler [IfGotoInstruction endLabel]
+    compile (IfGotoInstruction endLabel)
     compile statements
-    constantCompiler
-      [ GotoInstruction startLabel
-      , LabelInstruction endLabel
-      ]
+    compile (GotoInstruction startLabel)
+    compile (LabelInstruction endLabel)
   compile (Do subCall) = do
     compile subCall
-    constantCompiler
-      [PopInstruction (Target TempSegment 0)]
+    compile $
+      PopInstruction (Target TempSegment 0)
   compile (Return Nothing) = do
     compile (IntConst 0)
-    constantCompiler [ReturnInstruction]
+    compile ReturnInstruction
   compile (Return (Just expression)) = do
     compile expression
-    constantCompiler [ReturnInstruction]
+    compile ReturnInstruction
 
 compileAccess :: VarAccess -> ContextCompiler Target
 compileAccess (Var var) = resolveVarTarget var
 compileAccess (Subscript var index) = do
   arrayTarget <- resolveVarTarget var
-  constantCompiler [PushInstruction arrayTarget]
+  compile (PushInstruction arrayTarget)
   compile index
-  constantCompiler
-    [ AddInstruction
-    , PopInstruction that
-    ]
+  compile AddInstruction
+  compile (PopInstruction that)
   return (Target ThatSegment 0)
 
 instance Compilable (Op, Term) where
@@ -381,51 +367,43 @@ instance Compilable Expression where
     compile opTerms
 
 instance Compilable Op where --compiles into code that calls op on top 2 stack values
-  compile Plus = constantCompiler [AddInstruction]
-  compile Minus = constantCompiler [SubInstruction]
+  compile Plus = compile AddInstruction
+  compile Minus = compile SubInstruction
   compile Times =
-    constantCompiler
-      [
-        CallInstruction
+    compile $
+      CallInstruction
         (vmFunctionName "Math" "multiply")
         2
-      ]
   compile Div =
-    constantCompiler
-      [
-        CallInstruction
+    compile $
+      CallInstruction
         (vmFunctionName "Math" "divide")
         2
-      ]
-  compile And = constantCompiler [AddInstruction]
-  compile Or = constantCompiler [OrInstruction]
-  compile LessThan = constantCompiler [LessThanInstruction]
-  compile GreaterThan = constantCompiler [GreaterThanInstruction]
-  compile EqualTo = constantCompiler [EqualsInstruction]
+  compile And = compile AddInstruction
+  compile Or = compile OrInstruction
+  compile LessThan = compile LessThanInstruction
+  compile GreaterThan = compile GreaterThanInstruction
+  compile EqualTo = compile EqualsInstruction
 
 instance Compilable Term where --compiles into code that pushes value to stack
   compile (IntConst int) =
-    constantCompiler
-      [PushInstruction (Target ConstantSegment int)]
+    compile $
+      PushInstruction (Target ConstantSegment int)
   compile (StringConst string) = do
     compile (IntConst (length string))
-    constantCompiler
-      [
-        CallInstruction
+    compile $
+      CallInstruction
         (vmFunctionName "String" "new")
         1
-      ]
-    compileInOrder $
+    sequence_ $
       map
         (
           \c -> do
             compile (IntConst (ord c))
-            constantCompiler
-              [
-                CallInstruction
+            compile $
+              CallInstruction
                 (vmFunctionName "String" "appendChar")
                 2 --the string and the character
-              ]
         )
         string
   compile (Parenthesized expression) =
@@ -441,7 +419,7 @@ instance Compilable Term where --compiles into code that pushes value to stack
     compile (IntConst 0)
   compile (Access access) = do
     target <- compileAccess access
-    constantCompiler [PushInstruction target]
+    compile (PushInstruction target)
   compile (SubroutineCall subCall) =
     compile subCall
   compile (Unary op term) = do
@@ -459,12 +437,10 @@ instance Compilable SubCall where --compiles into code that calls the function a
       args =
         if method then explicitArgs + 1
         else explicitArgs
-    constantCompiler
-      [
-        CallInstruction
+    compile $
+      CallInstruction
         (vmFunctionName className funcName)
         args
-      ]
   compile (Qualified qualifier funcName expressions) = do
     resolvedQualifier <- maybeResolveVar qualifier
     let
@@ -477,23 +453,17 @@ instance Compilable SubCall where --compiles into code that calls the function a
       compile (Access (Var qualifier))
       compile expressions
       varClass <- getVarClass qualifier
-      constantCompiler
-        [
-          CallInstruction
+      compile $
+        CallInstruction
           (vmFunctionName varClass funcName)
           (explicitArgs + 1) --include the "this" value in the arg count
-        ]
     else do
       compile expressions
-      constantCompiler
-        [
-          CallInstruction
+      compile $
+        CallInstruction
           (vmFunctionName qualifier funcName)
           explicitArgs
-        ]
 
 instance Compilable UnaryOp where --compiles into code that calls op on top stack value
-  compile LogicalNot =
-    constantCompiler [NotInstruction]
-  compile IntegerNegate =
-    constantCompiler [NegInstruction]
+  compile LogicalNot = compile (NotInstruction)
+  compile IntegerNegate = compile (NegInstruction)
