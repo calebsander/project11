@@ -9,19 +9,24 @@ import VMCode
 
 type Scope = Map.Map String (Type, Int)
 
+singleVars :: [VarDec] -> [(String, Type)]
+singleVars =
+  concat .
+  map
+    (
+      \(VarDec jackType vars) ->
+        map (\var -> (var, jackType)) vars
+    )
 makeScope :: [VarDec] -> Scope
 makeScope varDecs =
   let
     enumerate = zip [(0 :: Int)..] --taken from http://stackoverflow.com/a/6473153
     mapWithIndex f xs = map f (enumerate xs)
-    singleVars (VarDec jackType vars) =
-      map (\var -> (var, jackType)) vars
   in
     Map.fromList $
       mapWithIndex
         (\(index, (var, jackType)) -> (var, (jackType, index))) $
-          concat $
-            map singleVars varDecs
+          singleVars varDecs
 
 type FuncSet = Set.Set String
 data StaticContextInfo = StaticContextInfo --every function has a class context and a function context
@@ -140,6 +145,11 @@ getLabelId =
     in
       ([], newContext, show minLabelId)
 
+getContext :: ContextCompiler Context
+getContext =
+  ContextCompiler $ \context ->
+    ([], context, context)
+
 vmFunctionName :: String -> String -> String
 vmFunctionName className funcName =
   className ++ "." ++ funcName
@@ -147,8 +157,8 @@ vmFunctionName className funcName =
 newtype ContextCompiler a = ContextCompiler (Context -> ([VMInstruction], Context, a))
 compileInContext :: ContextCompiler a -> Context -> ([VMInstruction], Context, a)
 compileInContext (ContextCompiler compiler) = compiler
-executeRootCompiler :: (Compilable a) => a -> [VMInstruction]
-executeRootCompiler compilable =
+rootCompile :: (Compilable a) => a -> [VMInstruction]
+rootCompile compilable =
   let
     compiler = compile compilable
     emptyContext =
@@ -253,24 +263,24 @@ instance Compilable Class where
 instance Compilable Subroutine where
   compile (Subroutine funcType _ funcName parameters locals body) = do
     className <- getClass
-    fieldCount <- getFieldCount --have to count fields (for constructor) before modifying context to hide instanceContext
     constantCompiler
       [
         FunctionInstruction
         (vmFunctionName className funcName)
-        (length locals)
+        (length (singleVars locals))
       ]
+    context <- getContext --save context so it can be restored after this subroutine
     modifyContext $ \(Context staticContext instanceContext) ->
       let
         implicitParameters = case funcType of
-          Method ->
-            Parameter (JackClass "Array") "this" : parameters
-          _ ->
+          Function ->
             parameters
+          _ -> --constructors and methods can access "this"
+            Parameter (JackClass "Array") "this" : parameters
         toVarDec (Parameter jackType name) = VarDec jackType [name]
         newInstanceContext = case funcType of
-          Method -> instanceContext
-          _ -> Nothing
+          Function -> Nothing
+          _ -> instanceContext --constructors and methods can access the instance
       in
         Context
           (
@@ -290,6 +300,7 @@ instance Compilable Subroutine where
           , PopInstruction this
           ]
       Constructor -> do --allocate memory for this
+        fieldCount <- getFieldCount
         compile (IntConst fieldCount)
         constantCompiler
           [ CallInstruction
@@ -301,6 +312,7 @@ instance Compilable Subroutine where
         return ()
     compile body
     constantCompiler [EmptyInstruction] --for readability
+    modifyContext (const context) --restore context for next subroutine
 
 instance Compilable Statement where
   compile (Let access expression) = do
@@ -405,7 +417,16 @@ instance Compilable Term where --compiles into code that pushes value to stack
       ]
     compileInOrder $
       map
-        (compile . IntConst . ord)
+        (
+          \c -> do
+            compile (IntConst (ord c))
+            constantCompiler
+              [
+                CallInstruction
+                (vmFunctionName "String" "appendChar")
+                2 --the string and the character
+              ]
+        )
         string
   compile (Parenthesized expression) =
     compile expression

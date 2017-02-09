@@ -78,5 +78,5 @@ instance Show VMInstruction where
   show (LabelInstruction label) = "label " ++ label
   show ReturnInstruction = "return"
   show EmptyInstruction = ""
-instance Show [VMInstruction] where
-  show = intercalate "\n" . map show
+toVMFile :: [VMInstruction] -> String
+toVMFile = intercalate "\n" . map show

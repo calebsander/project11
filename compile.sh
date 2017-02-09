@@ -1,3 +1,3 @@
 #!/bin/bash
 
-stack ghc -- -XFlexibleInstances -XNamedFieldPuns -Wall JackCompiler.hs
+stack ghc -- -XFlexibleInstances -XNamedFieldPuns -Wall Main.hs -o Main
