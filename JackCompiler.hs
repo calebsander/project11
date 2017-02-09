@@ -24,9 +24,10 @@ makeScope varDecs =
             map singleVars varDecs
 
 type FuncSet = Set.Set String
-data StaticContextInfo = StaticContextInfo
-  {statics :: Scope, args :: Scope, locals :: Scope, functions :: FuncSet, className :: String}
-data InstanceContextInfo = InstanceContextInfo {fields :: Scope, methods :: FuncSet}
+data StaticContextInfo = StaticContextInfo --every function has a class context and a function context
+  {statics :: Scope, args :: Scope, locals :: Scope, functions :: FuncSet, className :: String, minLabelId :: Int}
+data InstanceContextInfo = --methods also have an instance context
+  InstanceContextInfo {fields :: Scope, methods :: FuncSet}
 data Context
   = Context StaticContextInfo (Maybe InstanceContextInfo)
 
@@ -85,7 +86,7 @@ isMethod funcName =
   ContextCompiler $ \context ->
     let
       noFunctionError = error ("No such function/method: " ++ funcName)
-      (Context (StaticContextInfo {functions}) instanceContext) = context
+      Context (StaticContextInfo {functions}) instanceContext = context
       method =
         if Set.member funcName functions then
           False
@@ -127,6 +128,18 @@ getFieldCount =
         Nothing ->
           error "Can't count fields on static function"
 
+getLabelId :: ContextCompiler String
+getLabelId =
+  ContextCompiler $ \(Context staticContext instanceContext) ->
+    let
+      StaticContextInfo {minLabelId} = staticContext
+      newContext =
+        Context
+        (staticContext {minLabelId = minLabelId + 1})
+        instanceContext
+    in
+      ([], newContext, show minLabelId)
+
 vmFunctionName :: String -> String -> String
 vmFunctionName className funcName =
   className ++ "." ++ funcName
@@ -147,6 +160,7 @@ executeRootCompiler compilable =
             , locals = undefined
             , functions = undefined
             , className = undefined
+            , minLabelId = undefined
             }
         )
         Nothing
@@ -188,6 +202,9 @@ compileEach = compileInOrder . map compile
 class Compilable a where
   compile :: a -> ContextCompiler ()
 
+instance (Compilable a) => Compilable [a] where
+  compile = compileEach
+
 instance Compilable Class where
   compile (Class className classVars subroutines) =
     let
@@ -220,6 +237,7 @@ instance Compilable Class where
           , locals = undefined
           , functions = functionSet
           , className
+          , minLabelId = undefined
           }
       instanceContext =
         InstanceContextInfo
@@ -230,10 +248,10 @@ instance Compilable Class where
     in
       do
         modifyContext (const classContext)
-        compileEach subroutines
+        compile subroutines
 
 instance Compilable Subroutine where
-  compile (Subroutine funcType _ funcName parameters locals statements) = do
+  compile (Subroutine funcType _ funcName parameters locals body) = do
     className <- getClass
     fieldCount <- getFieldCount --have to count fields (for constructor) before modifying context to hide instanceContext
     constantCompiler
@@ -261,6 +279,7 @@ instance Compilable Subroutine where
                 makeScope $
                   map toVarDec implicitParameters
               , locals = makeScope locals
+              , minLabelId = 0
               }
           )
           newInstanceContext
@@ -280,7 +299,7 @@ instance Compilable Subroutine where
           ]
       Function ->
         return ()
-    compileEach statements
+    compile body
     constantCompiler [EmptyInstruction] --for readability
 
 instance Compilable Statement where
@@ -288,6 +307,35 @@ instance Compilable Statement where
     compile expression
     target <- compileAccess access
     constantCompiler [PopInstruction target]
+  compile (If condition ifBlock []) = do --more efficient version if there are no else conditions
+    endLabel <- fmap ("IF_END_" ++) getLabelId
+    compile (Unary LogicalNot (Parenthesized condition))
+    constantCompiler [IfGotoInstruction endLabel]
+    compile ifBlock
+    constantCompiler [LabelInstruction endLabel]
+  compile (If condition ifBlock elseBlock) = do
+    elseLabel <- fmap ("ELSE_" ++) getLabelId
+    endLabel <- fmap ("IF_END_" ++) getLabelId
+    compile (Unary LogicalNot (Parenthesized condition))
+    constantCompiler [IfGotoInstruction elseLabel]
+    compile ifBlock
+    constantCompiler
+      [ GotoInstruction endLabel
+      , LabelInstruction elseLabel
+      ]
+    compile elseBlock
+    constantCompiler [LabelInstruction endLabel]
+  compile (While condition statements) = do
+    startLabel <- fmap ("WHILE_START_" ++) getLabelId
+    endLabel <- fmap ("WHILE_END_" ++) getLabelId
+    constantCompiler [LabelInstruction startLabel]
+    compile (Unary LogicalNot (Parenthesized condition))
+    constantCompiler [IfGotoInstruction endLabel]
+    compile statements
+    constantCompiler
+      [ GotoInstruction startLabel
+      , LabelInstruction endLabel
+      ]
   compile (Do subCall) = do
     compile subCall
     constantCompiler
@@ -318,7 +366,7 @@ instance Compilable (Op, Term) where
 instance Compilable Expression where
   compile (Expression firstTerm opTerms) = do
     compile firstTerm
-    compileEach opTerms
+    compile opTerms
 
 instance Compilable Op where --compiles into code that calls op on top 2 stack values
   compile Plus = constantCompiler [AddInstruction]
@@ -384,7 +432,7 @@ instance Compilable SubCall where --compiles into code that calls the function a
     className <- getClass
     method <- isMethod funcName
     when method $ compile This
-    compileEach expressions
+    compile expressions
     let
       explicitArgs = length expressions
       args =
@@ -406,7 +454,7 @@ instance Compilable SubCall where --compiles into code that calls the function a
       explicitArgs = length expressions
     if qualifierIsVar then do
       compile (Access (Var qualifier))
-      compileEach expressions
+      compile expressions
       varClass <- getVarClass qualifier
       constantCompiler
         [
@@ -415,7 +463,7 @@ instance Compilable SubCall where --compiles into code that calls the function a
           (explicitArgs + 1) --include the "this" value in the arg count
         ]
     else do
-      compileEach expressions
+      compile expressions
       constantCompiler
         [
           CallInstruction

@@ -83,24 +83,17 @@ parse :: Parser a -> String -> Maybe (a, String)
 parse (Parser f) = f
 
 instance Monad Parser where
-  (>>=) = parseAndThen
-  return = parseReturn
+  pa >>= f =
+    Parser $ \s ->
+      case parse pa s of
+        Nothing -> Nothing
+        Just (a, s') -> parse (f a) s'
+  return x = Parser $ \s -> Just (x, s)
 instance Applicative Parser where
   (<*>) = ap
   pure = return
 instance Functor Parser where
   fmap = liftM
-
-parseReturn :: a -> Parser a
-parseReturn x =
-  Parser $ \s -> Just (x, s)
-
-parseAndThen :: Parser a -> (a -> Parser b) -> Parser b
-parseAndThen pa f =
-  Parser $ \s ->
-    case parse pa s of
-      Nothing -> Nothing
-      Just (a, s') -> parse (f a) s'
 
 satisfies :: (Char -> Bool) -> Parser Char
 satisfies c =
@@ -120,9 +113,6 @@ keyword (c : cs) = do
   _ <- satisfies (c ==)
   keyword cs
 
-parseMap :: (a -> b) -> Parser a -> Parser b
-parseMap aToB pa = parseMap2 (const . aToB) pa (return ())
-
 parseMap2 :: (a -> b -> c) -> Parser a -> Parser b -> Parser c
 parseMap2 f pa pb = do
   a <- pa
@@ -133,7 +123,7 @@ parseKeywordValue :: [(String, a)] -> Parser a
 parseKeywordValue nameValues =
   let
     getParser (name, value) =
-      parseMap (const value) (keyword name)
+      fmap (const value) (keyword name)
   in
     choice (map getParser nameValues)
 
@@ -151,7 +141,7 @@ zeroOrMore parser =
       Nothing ->
         Just ([], string)
       Just (aValue, remaining) ->
-        parse (parseMap (aValue :) (zeroOrMore parser)) remaining
+        parse (fmap (aValue :) (zeroOrMore parser)) remaining
 
 oneOrMore :: Parser a -> Parser [a]
 oneOrMore parser = parseMap2 (:) parser (zeroOrMore parser)
@@ -174,7 +164,7 @@ jackTypeParser =
       , ("char", JackChar)
       , ("boolean", JackBool)
       ]
-    , parseMap JackClass identifier
+    , fmap JackClass identifier
     ]
 
 choice :: [Parser a] -> Parser a
@@ -216,7 +206,7 @@ parseLineComment :: Parser ()
 parseLineComment = do
   keyword "//"
   parseUntil $ choice
-    [ parseMap (const ()) (satisfies isNewLine)
+    [ fmap (const ()) (satisfies isNewLine)
     , parseEnd
     ]
 
@@ -259,7 +249,7 @@ parseCommaSeparated parser = do
 
 optionalParseCommaSeparated :: Parser a -> Parser [a]
 optionalParseCommaSeparated parser =
-  parseMap resolveMaybeList $
+  fmap resolveMaybeList $
     parseOptional $
       parseCommaSeparated parser
 
@@ -285,7 +275,7 @@ parseClassVar = do
 parseOptional :: Parser a -> Parser (Maybe a)
 parseOptional parser =
   choice
-    [ parseMap Just parser
+    [ fmap Just parser
     , return Nothing
     ]
 
@@ -330,7 +320,7 @@ parseAccess :: Parser VarAccess
 parseAccess =
   choice
     [ parseSubscript
-    , parseMap Var identifier -- this must come after array access because it can start that expression
+    , fmap Var identifier -- this must come after array access because it can start that expression
     ]
 
 parseParenthesized :: Parser Term
@@ -394,8 +384,8 @@ parseTerm =
       , ("null", Null)
       , ("this", This)
       ]
-    , parseMap SubroutineCall parseSubCall
-    , parseMap Access parseAccess -- this must come after array subroutine call because a variable access can start that expression
+    , fmap SubroutineCall parseSubCall
+    , fmap Access parseAccess -- this must come after array subroutine call because a variable access can start that expression
     , parseParenthesized
     , parseUnaryOperation
     ]
@@ -478,7 +468,7 @@ parseIf :: Parser Statement
 parseIf = do
   (expression, block) <- parseConditionAndBlock "if"
   optionalSpaceParser
-  elseBlock <- parseMap resolveMaybeList $
+  elseBlock <- fmap resolveMaybeList $
     parseOptional parseElse
   return (If expression block elseBlock)
 
@@ -509,7 +499,7 @@ parseReturnStatement =
       keyword "return"
       returnValue <- choice
         [ spaceAndValueParser
-        , parseMap (const Nothing) optionalSpaceParser -- this must come after the return value parser since "return" is at the start of "return value"
+        , fmap (const Nothing) optionalSpaceParser -- this must come after the return value parser since "return" is at the start of "return value"
         ]
       keyword ";"
       return (Return returnValue)
@@ -536,7 +526,7 @@ parseMaybeVoidType :: Parser (Maybe Type)
 parseMaybeVoidType =
   choice
     [ parseKeywordValue [("void", Nothing)]
-    , parseMap Just jackTypeParser
+    , fmap Just jackTypeParser
     ]
 
 parseParameter :: Parser Parameter
