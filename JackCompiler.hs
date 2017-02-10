@@ -85,7 +85,6 @@ isMethod :: String -> ContextCompiler Bool
 isMethod funcName =
   ContextCompiler $ \context ->
     let
-      noFunctionError = error ("No such function/method: " ++ funcName)
       Context (StaticContext {functions}) (InstanceContext {methods}) = context
       function = Set.member funcName functions
       method = Set.member funcName methods
@@ -285,25 +284,26 @@ instance Compilable Statement where
     compile expression
     target <- compileAccess access
     compile (PopInstruction target)
-  compile (If condition ifBlock []) = do --more efficient version if there are no else conditions
-    endLabel <- fmap ("IF_END_" ++) getLabelId
-    compile (Unary LogicalNot (Parenthesized condition))
-    compile (IfGotoInstruction endLabel)
-    compile ifBlock
-    compile (LabelInstruction endLabel)
   compile (If condition ifBlock elseBlock) = do
-    elseLabel <- fmap ("ELSE_" ++) getLabelId
-    endLabel <- fmap ("IF_END_" ++) getLabelId
-    compile (Unary LogicalNot (Parenthesized condition))
-    compile (IfGotoInstruction elseLabel)
+    labelId <- getLabelId
+    let
+      trueLabel = "IF_TRUE_" ++ labelId
+      falseLabel = "IF_FALSE_" ++ labelId
+      endLabel = "IF_END_" ++ labelId
+    compile condition
+    compile (IfGotoInstruction trueLabel)
+    compile (GotoInstruction falseLabel)
+    compile (LabelInstruction trueLabel)
     compile ifBlock
     compile (GotoInstruction endLabel)
-    compile (LabelInstruction elseLabel)
+    compile (LabelInstruction falseLabel)
     compile elseBlock
     compile (LabelInstruction endLabel)
   compile (While condition statements) = do
-    startLabel <- fmap ("WHILE_START_" ++) getLabelId
-    endLabel <- fmap ("WHILE_END_" ++) getLabelId
+    labelId <- getLabelId
+    let
+      startLabel = "WHILE_START_" ++ labelId
+      endLabel = "WHILE_END_" ++ labelId
     compile (LabelInstruction startLabel)
     compile (Unary LogicalNot (Parenthesized condition))
     compile (IfGotoInstruction endLabel)
@@ -353,7 +353,7 @@ instance Compilable Op where --compiles into code that calls op on top 2 stack v
       CallInstruction
         (vmFunctionName "Math" "divide")
         2
-  compile And = compile AddInstruction
+  compile And = compile AndInstruction
   compile Or = compile OrInstruction
   compile LessThan = compile LessThanInstruction
   compile GreaterThan = compile GreaterThanInstruction
