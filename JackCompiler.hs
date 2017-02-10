@@ -267,10 +267,10 @@ instance Compilable Subroutine where
     modifyContext $ \(Context staticContext instanceContext) ->
       let
         implicitParameters = case funcType of
-          Function ->
-            parameters
-          _ -> --constructors and methods can access "this"
+          Method -> --methods are non-statically invoked
             Parameter (JackClass "Array") "this" : parameters
+          _ -> --constructors and functions are statically invoked
+            parameters
         toVarDec (Parameter jackType name) = VarDec jackType [name]
         newInstanceContext = case funcType of
           Function -> Nothing
@@ -289,8 +289,7 @@ instance Compilable Subroutine where
           newInstanceContext
     case funcType of
       Method -> do --set this to arg 0
-        compile $
-          PushInstruction (Target ArgumentSegment 0)
+        compile (Access (Var "this"))
         compile (PopInstruction this)
       Constructor -> do --allocate memory for this
         fieldCount <- getFieldCount
@@ -414,7 +413,7 @@ instance Compilable Term where --compiles into code that pushes value to stack
     compile (BoolConst False)
     compile LogicalNot
   compile This =
-    compile (Access (Var "this"))
+    compile (PushInstruction this)
   compile Null =
     compile (IntConst 0)
   compile (Access access) = do
