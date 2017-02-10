@@ -22,7 +22,7 @@ makeScope :: [VarDec] -> Scope
 makeScope varDecs =
   let
     enumerate = zip [(0 :: Int)..] --taken from http://stackoverflow.com/a/6473153
-    mapWithIndex f xs = map f (enumerate xs)
+    mapWithIndex f = map f . enumerate
   in
     Map.fromList $
       mapWithIndex
@@ -30,48 +30,42 @@ makeScope varDecs =
           singleVars varDecs
 
 type FuncSet = Set.Set String
-data StaticContextInfo = StaticContextInfo --every function has a class context and a function context
+data StaticContext = StaticContext --every function has a class context and a function context
   {statics :: Scope, args :: Scope, locals :: Scope, functions :: FuncSet, className :: String, minLabelId :: Int}
-data InstanceContextInfo = --methods also have an instance context
-  InstanceContextInfo {fields :: Scope, methods :: FuncSet}
+data InstanceContext = --methods also have an instance context
+  InstanceContext {fields :: Scope, methods :: FuncSet}
+
+noInstanceContext :: InstanceContext
+noInstanceContext =
+  InstanceContext
+    { fields = Map.empty
+    , methods = Set.empty
+    }
+
 data Context
-  = Context StaticContextInfo (Maybe InstanceContextInfo)
+  = Context StaticContext InstanceContext
+
+resolveVarInScopes :: String -> [(Scope, Segment)] -> Maybe (Type, Target)
+resolveVarInScopes _ [] = Nothing
+resolveVarInScopes var ((scope, segment) : remaining) =
+  case Map.lookup var scope of
+    Just (jackType, offset) ->
+      Just (jackType, Target segment offset)
+    Nothing ->
+      resolveVarInScopes var remaining
 
 maybeResolveVar :: String -> ContextCompiler (Maybe (Type, Target))
-maybeResolveVar varName =
-  let
-    lookupStatic var (StaticContextInfo {statics, args, locals}) =
-      case Map.lookup var locals of
-        Just (jackType, offset) ->
-          Just (jackType, Target LocalSegment offset)
-        Nothing ->
-          case Map.lookup var args of
-            Just (jackType, offset) ->
-              Just (jackType, Target ArgumentSegment offset)
-            Nothing ->
-              case Map.lookup var statics of
-                Just (jackType, offset) ->
-                  Just (jackType, Target StaticSegment offset)
-                Nothing ->
-                  Nothing
-  in
-    ContextCompiler $ \context ->
-      let
-        Context staticContext instanceContext = context
-        resolvedVar =
-          case lookupStatic varName staticContext of
-            Nothing ->
-              case instanceContext of
-                Nothing ->
-                  Nothing
-                Just (InstanceContextInfo {fields}) ->
-                  case Map.lookup varName fields of
-                    Just (jackType, offset) ->
-                      Just (jackType, Target ThisSegment offset)
-                    Nothing ->
-                      Nothing
-            result ->
-              result
+maybeResolveVar var =
+  ContextCompiler $ \context ->
+    let
+      Context (StaticContext {statics, args, locals}) (InstanceContext {fields}) = context
+      resolvedVar =
+        resolveVarInScopes var
+          [ (locals, LocalSegment)
+          , (args, ArgumentSegment)
+          , (statics, StaticSegment)
+          , (fields, ThisSegment)
+          ]
       in
         ([], context, resolvedVar)
 
@@ -92,27 +86,24 @@ isMethod funcName =
   ContextCompiler $ \context ->
     let
       noFunctionError = error ("No such function/method: " ++ funcName)
-      Context (StaticContextInfo {functions}) instanceContext = context
-      method =
-        if Set.member funcName functions then
-          False
+      Context (StaticContext {functions}) (InstanceContext {methods}) = context
+      function = Set.member funcName functions
+      method = Set.member funcName methods
+      result =
+        if function then
+          if method then error ("Both function and method: " ++ funcName)
+          else False
         else
-          case instanceContext of
-            Nothing ->
-              noFunctionError
-            Just (InstanceContextInfo {methods}) ->
-              if Set.member funcName methods then
-                True
-              else
-                noFunctionError
+          if method then True
+          else error ("No such function/method: " ++ funcName)
     in
-      ([], context, method)
+      ([], context, result)
 
 getClass :: ContextCompiler String
 getClass =
   ContextCompiler $ \context ->
       let
-        Context (StaticContextInfo {className}) _ = context
+        Context (StaticContext {className}) _ = context
       in
         ([], context, className)
 
@@ -126,19 +117,16 @@ getVarClass var = do
 getFieldCount :: ContextCompiler Int
 getFieldCount =
   ContextCompiler $ \context ->
-    let Context _ instanceContext = context
+    let
+      Context _ (InstanceContext {fields}) = context
     in
-      case instanceContext of
-        Just (InstanceContextInfo {fields}) ->
-          ([], context, Map.size fields)
-        Nothing ->
-          error "Can't count fields on static function"
+      ([], context, Map.size fields)
 
 getLabelId :: ContextCompiler String
 getLabelId =
   ContextCompiler $ \(Context staticContext instanceContext) ->
     let
-      StaticContextInfo {minLabelId} = staticContext
+      StaticContext {minLabelId} = staticContext
       newContext =
         Context
         (staticContext {minLabelId = minLabelId + 1})
@@ -162,20 +150,7 @@ rootCompile :: (Compilable a) => a -> [VMInstruction]
 rootCompile compilable =
   let
     compiler = compile compilable
-    emptyContext =
-      Context
-        (
-          StaticContextInfo
-            { statics = undefined
-            , args = undefined
-            , locals = undefined
-            , functions = undefined
-            , className = undefined
-            , minLabelId = undefined
-            }
-        )
-        Nothing
-    (instructions, _, _) = compileInContext compiler emptyContext
+    (instructions, _, _) = compileInContext compiler undefined
   in
     instructions
 
@@ -237,7 +212,7 @@ instance Compilable Class where
       functionSet = makeFuncSet (not . isAMethod)
       methodSet = makeFuncSet isAMethod
       staticContext =
-        StaticContextInfo
+        StaticContext
           { statics = staticScope
           , args = undefined
           , locals = undefined
@@ -246,11 +221,11 @@ instance Compilable Class where
           , minLabelId = undefined
           }
       instanceContext =
-        InstanceContextInfo
+        InstanceContext
           { fields = fieldScope
           , methods = methodSet
           }
-      classContext = Context staticContext (Just instanceContext)
+      classContext = Context staticContext instanceContext
     in
       do
         modifyContext (const classContext)
@@ -267,13 +242,13 @@ instance Compilable Subroutine where
     modifyContext $ \(Context staticContext instanceContext) ->
       let
         implicitParameters = case funcType of
-          Method -> --methods are non-statically invoked
+          Method -> --methods are passed in the value of "this"
             Parameter (JackClass "Array") "this" : parameters
           _ -> --constructors and functions are statically invoked
             parameters
         toVarDec (Parameter jackType name) = VarDec jackType [name]
         newInstanceContext = case funcType of
-          Function -> Nothing
+          Function -> noInstanceContext
           _ -> instanceContext --constructors and methods can access the instance
       in
         Context
