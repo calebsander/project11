@@ -101,10 +101,10 @@ isMethod funcName =
 getClass :: ContextCompiler String
 getClass =
   ContextCompiler $ \context ->
-      let
-        Context (StaticContext {className}) _ = context
-      in
-        ([], context, className)
+    let
+      Context (StaticContext {className}) _ = context
+    in
+      ([], context, className)
 
 getVarClass :: String -> ContextCompiler String
 getVarClass var = do
@@ -122,7 +122,7 @@ getFieldCount =
       ([], context, Map.size fields)
 
 getLabelId :: ContextCompiler String
-getLabelId =
+getLabelId = --returns a unique label ID for the function
   ContextCompiler $ \(Context staticContext instanceContext) ->
     let
       StaticContext {minLabelId} = staticContext
@@ -176,31 +176,29 @@ instance Compilable VMInstruction where
   compile instruction =
     ContextCompiler $ \context ->
       ([instruction], context, ())
-compileEach :: (Compilable a) => [a] -> ContextCompiler ()
-compileEach = sequence_ . map compile
 
 class Compilable a where
   compile :: a -> ContextCompiler ()
 
 instance (Compilable a) => Compilable [a] where
-  compile = compileEach
+  compile = mapM_ compile
 
 instance Compilable Class where
   compile (Class className classVars subroutines) =
     let
-      isStatic (ClassVar scope _) =
+      isField (ClassVar scope _) =
         case scope of
-          Static -> True
-          Field -> False
+          Static -> False
+          Field -> True
       toVarDec (ClassVar _ varDec) = varDec
       makeClassScope filterFunction =
         makeScope $
           map toVarDec $
             filter filterFunction classVars
-      staticScope = makeClassScope isStatic
-      fieldScope = makeClassScope (not . isStatic)
-      getName (Subroutine _ _ name _ _ _) = name
-      isAMethod (Subroutine funcType _ _ _ _ _) =
+      statics = makeClassScope (not . isField)
+      fields = makeClassScope isField
+      getName (Subroutine {name}) = name
+      isAMethod (Subroutine {funcType}) =
         case funcType of
           Method -> True
           _ -> False
@@ -208,21 +206,21 @@ instance Compilable Class where
         Set.fromList $
           map getName $
             filter filterFunction subroutines
-      functionSet = makeFuncSet (not . isAMethod)
-      methodSet = makeFuncSet isAMethod
+      functions = makeFuncSet (not . isAMethod)
+      methods = makeFuncSet isAMethod
       staticContext =
         StaticContext
-          { statics = staticScope
+          { statics
           , args = undefined
           , locals = undefined
-          , functions = functionSet
+          , functions
           , className
           , minLabelId = undefined
           }
       instanceContext =
         InstanceContext
-          { fields = fieldScope
-          , methods = methodSet
+          { fields
+          , methods
           }
       classContext = Context staticContext instanceContext
     in
@@ -381,17 +379,16 @@ instance Compilable Term where --compiles into code that pushes value to stack
       CallInstruction
         (vmFunctionName "String" "new")
         1
-    sequence_ $
-      map
-        (
-          \c -> do
-            compile (IntConst (ord c))
-            compile $
-              CallInstruction
-                (vmFunctionName "String" "appendChar")
-                2 --the string and the character
-        )
-        string
+    mapM_
+      (
+        \c -> do
+          compile (IntConst (ord c))
+          compile $
+            CallInstruction
+              (vmFunctionName "String" "appendChar")
+              2 --the string and the character
+      )
+      string
   compile (Parenthesized expression) =
     compile expression
   compile (BoolConst bool) = do
@@ -449,5 +446,5 @@ instance Compilable SubCall where --compiles into code that calls the function a
           explicitArgs
 
 instance Compilable UnaryOp where --compiles into code that calls op on top stack value
-  compile LogicalNot = compile (NotInstruction)
-  compile IntegerNegate = compile (NegInstruction)
+  compile LogicalNot = compile NotInstruction
+  compile IntegerNegate = compile NegInstruction
