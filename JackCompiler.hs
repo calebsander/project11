@@ -285,6 +285,17 @@ instance Compilable Statement where
     compile expression
     target <- compileAccess access
     compile (PopInstruction target)
+  compile (If condition block []) = do --more efficient version if there is no else block
+    labelId <- getLabelId
+    let
+      trueLabel = "IF_TRUE_" ++ labelId
+      endLabel = "IF_END_" ++ labelId
+    compile condition
+    compile (IfGotoInstruction trueLabel)
+    compile (GotoInstruction endLabel)
+    compile (LabelInstruction trueLabel)
+    compile block
+    compile (LabelInstruction endLabel)
   compile (If condition ifBlock elseBlock) = do
     labelId <- getLabelId
     let

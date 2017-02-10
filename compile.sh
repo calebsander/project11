@@ -2,6 +2,6 @@
 
 stack ghc -- -XFlexibleInstances -XNamedFieldPuns -Wall Main.hs -o Main || exit
 
-for projectDir in Average ComplexArrays ConvertToBin Pong Seven Square; do
+for projectDir in $(ls -d */); do
 	./Main $projectDir
 done
