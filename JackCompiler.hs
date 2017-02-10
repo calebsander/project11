@@ -231,12 +231,12 @@ instance Compilable Class where
         compile subroutines
 
 instance Compilable Subroutine where
-  compile (Subroutine funcType _ funcName parameters locals body) = do
+  compile (Subroutine {funcType, name, parameters, vars, body}) = do
     className <- getClass
     compile $
       FunctionInstruction
-        (vmFunctionName className funcName)
-        (length (singleVars locals))
+        (vmFunctionName className name)
+        (length (singleVars vars))
     context <- getContext --save context so it can be restored after this subroutine
     modifyContext $ \(Context staticContext instanceContext) ->
       let
@@ -245,7 +245,8 @@ instance Compilable Subroutine where
             Parameter (JackClass "Array") "this" : parameters
           _ -> --constructors and functions are statically invoked
             parameters
-        toVarDec (Parameter jackType name) = VarDec jackType [name]
+        toVarDec (Parameter jackType paramName) =
+          VarDec jackType [paramName]
         newInstanceContext = case funcType of
           Function -> noInstanceContext
           _ -> instanceContext --constructors and methods can access the instance
@@ -256,7 +257,7 @@ instance Compilable Subroutine where
               { args =
                 makeScope $
                   map toVarDec implicitParameters
-              , locals = makeScope locals
+              , locals = makeScope vars
               , minLabelId = 0
               }
           )
@@ -382,11 +383,9 @@ instance Compilable Term where --compiles into code that pushes value to stack
         string
   compile (Parenthesized expression) =
     compile expression
-  compile (BoolConst False) =
+  compile (BoolConst bool) = do
     compile (IntConst 0)
-  compile (BoolConst True) = do
-    compile (BoolConst False)
-    compile LogicalNot
+    when bool $ compile LogicalNot
   compile This =
     compile (PushInstruction this)
   compile Null =

@@ -25,7 +25,14 @@ data SubroutineType
   | Function
 
 data Subroutine
-  = Subroutine SubroutineType (Maybe Type) String [Parameter] [VarDec] [Statement]
+  = Subroutine
+    { funcType :: SubroutineType
+    , returnType :: Maybe Type
+    , name :: String
+    , parameters :: [Parameter]
+    , vars :: [VarDec]
+    , body :: [Statement]
+    }
 
 data Parameter =
   Parameter Type String
@@ -538,7 +545,7 @@ parseParameter = do
 
 parseSubroutine :: Parser Subroutine
 parseSubroutine = do
-  methodType <- parseSubroutineType
+  funcType <- parseSubroutineType
   requiredSpaceParser
   returnType <- parseMaybeVoidType
   requiredSpaceParser
@@ -550,14 +557,22 @@ parseSubroutine = do
   keyword ")"
   optionalSpaceParser
   keyword "{"
-  variables <- zeroOrMore $ do
+  vars <- zeroOrMore $ do
     optionalSpaceParser
     keyword "var"
     requiredSpaceParser
     parseVarDec
-  statements <- parseBlock
+  body <- parseBlock
   keyword "}"
-  return (Subroutine methodType returnType name parameters variables statements)
+  return $
+    Subroutine
+      { funcType
+      , returnType
+      , name
+      , parameters
+      , vars
+      , body
+      }
 
 parseClass :: Parser Class
 parseClass = do
