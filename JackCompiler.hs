@@ -26,8 +26,8 @@ makeScope varDecs =
   in
     Map.fromList $
       mapWithIndex
-        (\(index, (var, jackType)) -> (var, (jackType, index))) $
-          singleVars varDecs
+        (\(index, (var, jackType)) -> (var, (jackType, index)))
+        (singleVars varDecs)
 
 type FuncSet = Set.Set String
 data StaticContext = StaticContext --every function has a class context and a function context
@@ -122,7 +122,7 @@ getFieldCount =
       ([], context, Map.size fields)
 
 getLabelId :: ContextCompiler String
-getLabelId = --returns a unique label ID for the function
+getLabelId = --returns a unique (for the function) label ID
   ContextCompiler $ \(Context staticContext instanceContext) ->
     let
       StaticContext {minLabelId} = staticContext

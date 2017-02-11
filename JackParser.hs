@@ -196,7 +196,7 @@ parseUntil parser =
               Nothing
             _ : remaining ->
               parse (parseUntil parser) remaining
-        _ ->
+        Just _ ->
           parsed
 
 parseEnd :: Parser ()
@@ -212,10 +212,11 @@ isNewLine c = c == '\r' || c == '\n'
 parseLineComment :: Parser ()
 parseLineComment = do
   keyword "//"
-  parseUntil $ choice
-    [ void (satisfies isNewLine)
-    , parseEnd
-    ]
+  parseUntil $
+    choice
+      [ void (satisfies isNewLine)
+      , parseEnd
+      ]
 
 parseBlockComment :: Parser ()
 parseBlockComment = do
@@ -233,11 +234,12 @@ whiteSpaceParser =
 requiredSpaceParser :: Parser ()
 requiredSpaceParser =
   void $
-    oneOrMore $ choice
-      [ whiteSpaceParser
-      , parseLineComment
-      , parseBlockComment
-      ]
+    oneOrMore $
+      choice
+        [ whiteSpaceParser
+        , parseLineComment
+        , parseBlockComment
+        ]
 
 optionalSpaceParser :: Parser ()
 optionalSpaceParser =
@@ -287,15 +289,9 @@ parseOptional parser =
     ]
 
 parseIntConstant :: Parser Int
-parseIntConstant =
-  Parser $ \string ->
-    case string of
-      "" ->
-        Nothing
-      firstChar : _ ->
-        if isDigit firstChar then
-          Just (read (takeWhile isDigit string), dropWhile isDigit string)
-        else Nothing
+parseIntConstant = do
+  digits <- oneOrMore (satisfies isDigit)
+  return (read digits)
 
 parseShort :: Parser Term
 parseShort = do
@@ -412,14 +408,15 @@ parseOp =
     ]
 
 parseExpression :: Parser Expression
-parseExpression =
-  parseMap2 Expression parseTerm $
-    zeroOrMore $ do
-      optionalSpaceParser
-      op <- parseOp
-      optionalSpaceParser
-      term <- parseTerm
-      return (op, term)
+parseExpression = do
+  firstTerm <- parseTerm
+  opTerms <- zeroOrMore $ do
+    optionalSpaceParser
+    op <- parseOp
+    optionalSpaceParser
+    term <- parseTerm
+    return (op, term)
+  return (Expression firstTerm opTerms)
 
 parseLet :: Parser Statement
 parseLet = do
@@ -576,7 +573,7 @@ parseSubroutine = do
 
 parseClass :: Parser Class
 parseClass = do
-  optionalSpaceParser -- must include surrounding whitespace because this is the root parser
+  optionalSpaceParser -- must include leading whitespace because this is the root parser
   keyword "class"
   requiredSpaceParser
   name <- identifier
