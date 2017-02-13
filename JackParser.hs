@@ -223,20 +223,12 @@ parseBlockComment = do
   keyword "/*"
   parseUntil (keyword "*/")
 
-whiteSpaceParser :: Parser ()
-whiteSpaceParser =
-  Parser $ \string ->
-    let dropped = dropWhile isSpace string
-    in
-      if string == dropped then Nothing -- some whitespace required
-      else Just ((), dropped)
-
 requiredSpaceParser :: Parser ()
 requiredSpaceParser =
   void $
     oneOrMore $
       choice
-        [ whiteSpaceParser
+        [ void (satisfies isSpace)
         , parseLineComment
         , parseBlockComment
         ]
